@@ -14,5 +14,5 @@ def csi_score(input, label, downvalue, upvalue):
     y_ = tf.cast(tf.reduce_sum(y, axis=[2, 3, 4]), dtype=tf.float32)
     z_ = tf.cast(tf.reduce_sum(z, axis=[2, 3, 4]), dtype=tf.float32)
     w_ = tf.cast(tf.reduce_sum(w, axis=[2, 3, 4]), dtype=tf.float32)
-    CSI = tf.div(x_, x_ + y_ + z_)
+    CSI = tf.divide(x_, x_ + y_ + z_)
     return CSI

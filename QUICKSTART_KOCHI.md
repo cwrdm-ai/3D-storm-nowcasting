@@ -5,20 +5,28 @@ This guide provides a simplified workflow to get you started quickly with traini
 ## Prerequisites
 
 - Python 3.7+
+- **TensorFlow 2.x** (>=2.4.0) - **UPDATED**: This project now uses TensorFlow 2.x
 - Kochi radar NetCDF files
 - ~16 GB RAM (for preprocessing)
 - GPU recommended for training (but not required for preprocessing)
+
+**Important**: This codebase has been migrated to TensorFlow 2.x. See `TF2_MIGRATION_GUIDE.md` for details.
 
 ---
 
 ## Step 1: Install Dependencies (5 minutes)
 
 ```bash
+# Install core dependencies (TensorFlow 2.x)
+pip install -r requirements.txt
+
 # Install preprocessing requirements
 cd preprocessing
 pip install -r requirements.txt
+cd ..
 
-# Verify installation
+# Verify TensorFlow installation
+python -c "import tensorflow as tf; print(f'TensorFlow {tf.__version__} installed successfully')"
 python -c "import pyart; print('Py-ART installed successfully')"
 ```
 

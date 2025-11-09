@@ -8,9 +8,10 @@ scipy>=1.5.0
 arm-pyart>=1.12.0
 netCDF4>=1.5.0
 
-# Deep learning
-tensorflow>=1.14.0,<2.0.0  # For TFRecord compatibility with existing training code
-# Note: For TF 2.x upgrade, use: tensorflow>=2.4.0
+# Deep learning - UPDATED TO TENSORFLOW 2.x
+tensorflow>=2.4.0  # TensorFlow 2.x for improved performance and features
+# Note: Supports both CPU and GPU versions
+# For GPU support, ensure CUDA/cuDNN are installed
 
 # Visualization
 matplotlib>=3.3.0

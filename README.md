@@ -19,11 +19,53 @@ DOI = {10.3390/rs14174256}
 ```
 
 ## Dependencies
-In general, several major packages are needed\
-python==3.7.2\
-tensorflow-gpu==1.14.0\
-tensorflow-determinism==0.3.0\
-numpy==1.21.6
+
+**⚠️ UPDATED TO TENSORFLOW 2.x**: This codebase has been migrated from TensorFlow 1.14 to TensorFlow 2.x. See `TF2_MIGRATION_GUIDE.md` for details.
+
+### Current Requirements
+- Python >= 3.7
+- **TensorFlow >= 2.4.0** (CPU or GPU version)
+- NumPy >= 1.19.0
+- Other dependencies in `requirements.txt`
+
+### Installation
+
+```bash
+# Install core dependencies
+pip install -r requirements.txt
+
+# For Kochi radar preprocessing
+pip install -r preprocessing/requirements.txt
+```
+
+### GPU Support (Optional)
+
+For GPU acceleration, ensure you have:
+- CUDA Toolkit 11.x
+- cuDNN 8.x
+- Compatible NVIDIA GPU
+
+Verify GPU availability:
+```python
+import tensorflow as tf
+print("Num GPUs Available:", len(tf.config.list_physical_devices('GPU')))
+```
+
+## Quick Start
+
+### For Kochi Radar Nowcasting
+
+See [`QUICKSTART_KOCHI.md`](QUICKSTART_KOCHI.md) for a complete guide to:
+1. Install dependencies
+2. Preprocess Kochi radar data
+3. Train the 3D ConvLSTM model
+4. Evaluate results
+
+### Migration from TensorFlow 1.x
+
+If you have an existing installation or trained models from TensorFlow 1.x:
+- See [`TF2_MIGRATION_GUIDE.md`](TF2_MIGRATION_GUIDE.md) for migration instructions
+- **Note**: TF 1.x checkpoints are not compatible with TF 2.x - you'll need to retrain
 
 ## References and Github Links
 [1] Mustafa, M.A. A data-driven learning approach to image registration. University of Nottingham. 2016.("https://github.com/Mustafa3946/Lucas-Kanade-3D-Optical-Flow")

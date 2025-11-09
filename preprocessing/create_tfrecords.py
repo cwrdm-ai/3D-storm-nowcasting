@@ -75,6 +75,7 @@ class TFRecordGenerator:
         ----------
         sequence_data : np.ndarray
             4D array of shape (total_length, nx, ny, nz)
+            Will be transposed to (total_length, nz, nx, ny, 1) to match training format
         timestamp : str
             Timestamp of the sequence start (optional)
 
@@ -83,24 +84,37 @@ class TFRecordGenerator:
         serialized : bytes
             Serialized example
         """
-        # Ensure data is float32
-        sequence_data = sequence_data.astype(np.float32)
+        # Transpose from (time, nx, ny, nz) to (time, nz, nx, ny)
+        # Training expects: (time, depth, height, width, channels)
+        sequence_data = np.transpose(sequence_data, (0, 3, 1, 2))
+
+        # Add channel dimension: (time, nz, nx, ny) -> (time, nz, nx, ny, 1)
+        sequence_data = np.expand_dims(sequence_data, axis=-1)
+
+        # Convert to float16 (to match training script expectations)
+        sequence_data = (sequence_data * 80.0).astype(np.float16)
 
         # Serialize the numpy array
         serialized_array = sequence_data.tobytes()
 
-        # Create feature dictionary
-        feature = {
-            'data': self._bytes_feature(serialized_array),
-            'height': self._int64_feature(self.grid_shape[0]),
-            'width': self._int64_feature(self.grid_shape[1]),
-            'depth': self._int64_feature(self.grid_shape[2]),
-            'time_steps': self._int64_feature(self.total_length),
-        }
-
-        # Add timestamp if provided
+        # Create timestamp/name feature
         if timestamp is not None:
-            feature['timestamp'] = self._bytes_feature(timestamp.encode('utf-8'))
+            # Convert timestamp string to int64 array for compatibility
+            # Use unix timestamp as integer
+            try:
+                dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+                timestamp_int = int(dt.timestamp())
+            except:
+                timestamp_int = 0
+            name_bytes = np.array([timestamp_int], dtype=np.int64).tobytes()
+        else:
+            name_bytes = np.array([0], dtype=np.int64).tobytes()
+
+        # Create feature dictionary matching training format
+        feature = {
+            'img_raw': self._bytes_feature(serialized_array),
+            'name': self._bytes_feature(name_bytes),
+        }
 
         # Create Example protocol buffer
         example_proto = tf.train.Example(features=tf.train.Features(feature=feature))

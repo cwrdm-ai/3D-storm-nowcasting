@@ -6,18 +6,27 @@ import configparser
 import numpy as np
 import shutil
 import tensorflow as tf
-from tfdeterminism import patch
-patch()
 import random
 from datetime import datetime
-from utils import log,  evaluation_functions
+from utils import log, evaluation_functions
 from model import ConvLSTM3d_model
 import warnings
 warnings.filterwarnings("ignore")
 
-temporal_weights = np.arange(1,13)
+# Set random seeds for reproducibility
+def seed_tensorflow(seed=1997):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+
+temporal_weights = np.arange(1, 13)
+
 
 def delete_file(path):
+    """Delete all files in a directory"""
+    if not os.path.exists(path):
+        return
     jpg_files = os.listdir(path)
     for f in jpg_files:
         file_path = os.path.join(path, f)
@@ -26,16 +35,24 @@ def delete_file(path):
         elif os.path.isdir(file_path):
             shutil.rmtree(file_path)
 
+
+def mkdir(path):
+    """Create directory if it doesn't exist"""
+    isExists = os.path.exists(path)
+    if not isExists:
+        os.makedirs(path)
+        return True
+    else:
+        return False
+
+
+# Load configuration
 conf = configparser.ConfigParser()
-conf.read("./configs.ini")
+conf.read("./configs_kochi.ini")
 
-training_dataset_path = 'D:/gridrad/train8/'
-validation_dataset_path = 'D:/gridrad/val8/'
-test_dataset_path = 'D:/gridrad/test8/'
-
-train_data_num = len(os.listdir('D:/gridrad/train7/'))
-valid_data_num = len(os.listdir('D:/gridrad/val7/'))
-test_data_num = len(os.listdir('D:/gridrad/test7/'))
+training_dataset_path = conf.get('dataset_paths', 'training_dataset_path')
+validation_dataset_path = conf.get('dataset_paths', 'validation_dataset_path')
+test_dataset_path = conf.get('dataset_paths', 'test_dataset_path')
 
 running_log_path = conf.get('logfile_paths', 'running_log_path')
 
@@ -46,7 +63,7 @@ model_keep_num = int(conf.get('saver_configs', 'model_keep_num'))
 generator_ini_learning_rate = float(conf.get('training_parameters', 'generator_ini_learning_rate'))
 img_height = int(conf.get('training_parameters', 'img_height'))
 img_width = int(conf.get('training_parameters', 'img_width'))
-img_size = (img_height,img_width)
+img_depth = int(conf.get('training_parameters', 'img_depth'))
 input_length = int(conf.get('training_parameters', 'input_length'))
 output_length = int(conf.get('training_parameters', 'output_length'))
 batch_size = int(conf.get('training_parameters', 'batch_size'))
@@ -54,241 +71,383 @@ val_batch_size = int(conf.get('training_parameters', 'val_batch_size'))
 test_batch_size = int(conf.get('training_parameters', 'test_batch_size'))
 training_steps = int(conf.get('training_parameters', 'training_steps'))
 imgs_sum_steps = int(conf.get('training_parameters', 'imgs_sum_steps'))
+validation_sum_steps = int(conf.get('training_parameters', 'validation_sum_steps'))
 
 patience = 20
 
-def mkdir(path):
-    isExists = os.path.exists(path)
-    if not isExists:
-        os.makedirs(path)
-        return True
-    else:
-        return False
+# Create directories
+mkdir(model_saving_path)
+mkdir(os.path.dirname(running_log_path))
 
-def seed_tensorflow(seed=1997):
-    random.seed(seed)
-    os.environ['PYTHONHASHSEED'] = str(seed)
-    np.random.seed(seed)
-    tf.set_random_seed(seed)
+img_shape = (input_length + output_length, img_depth, img_height, img_width, 1)
 
 
-img_shape = (20,120,120,16)
 def _parse_function(example_proto):
-    features = {"img_raw": tf.FixedLenFeature((), tf.string),
-              "name": tf.FixedLenFeature((), tf.string)}
-    parsed_features = tf.parse_single_example(example_proto, features)
+    """Parse TFRecord example"""
+    features = {
+        "img_raw": tf.io.FixedLenFeature((), tf.string),
+        "name": tf.io.FixedLenFeature((), tf.string)
+    }
+    parsed_features = tf.io.parse_single_example(example_proto, features)
     img_str = parsed_features["img_raw"]
     name_str = parsed_features["name"]
-    img = tf.decode_raw(img_str,tf.float16)
-    img = tf.reshape(img,img_shape)
-    img = tf.cast(img, tf.float32)/80
-    name = tf.decode_raw(name_str,tf.int64)
+
+    img = tf.io.decode_raw(img_str, tf.float16)
+    img = tf.reshape(img, img_shape)
+    img = tf.cast(img, tf.float32) / 80.0
+
+    name = tf.io.decode_raw(name_str, tf.int64)
     return img, name
 
-def get_dataset_from_tfrecords(tfrecords_pattern,is_train_dataset,batch_size=1, threads=18, shuffle_buffer_size=1, cycle_length=1):
 
+def get_dataset_from_tfrecords(tfrecords_pattern, is_train_dataset, batch_size=1,
+                                threads=18, shuffle_buffer_size=1, cycle_length=1):
+    """Create dataset from TFRecord files"""
     if is_train_dataset:
         files = tf.data.Dataset.list_files(tfrecords_pattern, shuffle=True)
     else:
-        files = tf.data.Dataset.list_files(tfrecords_pattern)
+        files = tf.data.Dataset.list_files(tfrecords_pattern, shuffle=False)
 
-    dataset = files.interleave(map_func=tf.data.TFRecordDataset, cycle_length=cycle_length)
+    dataset = files.interleave(
+        map_func=tf.data.TFRecordDataset,
+        cycle_length=cycle_length,
+        num_parallel_calls=tf.data.AUTOTUNE
+    )
     dataset = dataset.map(_parse_function, num_parallel_calls=threads)
 
     if is_train_dataset:
-        dataset = dataset.shuffle(buffer_size=shuffle_buffer_size).batch(batch_size, drop_remainder=True).repeat(100).prefetch(buffer_size=batch_size)
+        dataset = dataset.shuffle(buffer_size=shuffle_buffer_size) \
+                         .batch(batch_size, drop_remainder=True) \
+                         .repeat() \
+                         .prefetch(buffer_size=tf.data.AUTOTUNE)
     else:
-        dataset = dataset.batch(batch_size, drop_remainder=False).repeat(100)
+        dataset = dataset.batch(batch_size, drop_remainder=False) \
+                         .repeat()
     return dataset
 
 
-def main(argv=None):
-    seed_tensorflow(seed=1997)
-    update_generator = True
-    if update_generator:
-        delete_file(model_saving_path)
-    if (os.path.isfile(running_log_path)) and update_generator:
-        os.remove(running_log_path)
-    with tf.device('/cpu:0'):
-        logger = log.setting_log(running_log_path)
+class ConvLSTM3DTrainer:
+    """Trainer class for ConvLSTM3D model"""
 
-        tra_dataset = get_dataset_from_tfrecords(training_dataset_path + '*.tfrecords', is_train_dataset = True, batch_size=batch_size, shuffle_buffer_size=500)
-        val_dataset = get_dataset_from_tfrecords(validation_dataset_path + '*.tfrecords', is_train_dataset = False, batch_size=val_batch_size, shuffle_buffer_size=500)
-        test_dataset = get_dataset_from_tfrecords(test_dataset_path + '*.tfrecords', is_train_dataset = False, batch_size=test_batch_size, shuffle_buffer_size=500)
-        # create the iterator
+    def __init__(self, config, logger):
+        self.config = config
+        self.logger = logger
 
-        tra_iterator = tra_dataset.make_one_shot_iterator()
-        if update_generator:
-            val_iterator = val_dataset.make_one_shot_iterator()
+        # Create model
+        self.model = ConvLSTM3d_model.ConvLSTM3DGenerator(
+            input_length=input_length,
+            output_length=output_length
+        )
+
+        # Create optimizer
+        self.optimizer = tf.keras.optimizers.Adam(learning_rate=generator_ini_learning_rate)
+
+        # Create checkpoint manager
+        self.checkpoint = tf.train.Checkpoint(
+            optimizer=self.optimizer,
+            model=self.model
+        )
+        self.checkpoint_manager = tf.train.CheckpointManager(
+            self.checkpoint,
+            directory=model_saving_path,
+            max_to_keep=model_keep_num
+        )
+
+        # Load checkpoint if exists
+        self.pre_tra_steps = 0
+        if self.checkpoint_manager.latest_checkpoint:
+            self.checkpoint.restore(self.checkpoint_manager.latest_checkpoint)
+            # Extract step number from checkpoint path
+            try:
+                self.pre_tra_steps = int(self.checkpoint_manager.latest_checkpoint.split('-')[-1])
+            except:
+                self.pre_tra_steps = 0
+            self.logger.info(f"Restored from {self.checkpoint_manager.latest_checkpoint}, step {self.pre_tra_steps}")
         else:
-            val_iterator = test_dataset.make_one_shot_iterator()
+            self.logger.info("Initializing from scratch.")
 
-        input, _ = tra_iterator.get_next()
-        with tf.variable_scope(tf.get_variable_scope()):
-            with tf.device('/gpu:%d' % 0) as scope:
-                with tf.name_scope("tower_%d" % 0):
+    @tf.function
+    def train_step(self, inputs):
+        """Single training step"""
+        with tf.GradientTape() as tape:
+            predictions, labels, loss = self.model(inputs, training=True)
 
-                    _, _, loss = ConvLSTM3d_model.generator(input, input_length, output_length, is_training=True)
-                    with tf.name_scope('train_op'):
-                        update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-                        with tf.control_dependencies(update_ops):
-                            train_op = tf.train.AdamOptimizer(0.0001).minimize(loss)
-                    tf.get_variable_scope().reuse_variables()
+        gradients = tape.gradient(loss, self.model.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
 
-        val_input, _ = val_iterator.get_next()
-        with tf.variable_scope(tf.get_variable_scope()):
-            with tf.device('/gpu:%d' % 0) as scope:
-                with tf.name_scope("tower_%d" % 0):
-                    prediction, label, valloss = ConvLSTM3d_model.generator(val_input, input_length, output_length, is_training=False)
+        return loss
 
-        val_loss_tp = tf.placeholder(tf.float32)
-        val_loss_sum = tf.summary.scalar('val_loss', val_loss_tp, collections='evalutaion_indexs')
-        tf.add_to_collection('evalutaion_indexs', val_loss_sum)
+    @tf.function
+    def val_step(self, inputs):
+        """Single validation step"""
+        predictions, labels, loss = self.model(inputs, training=False)
 
-        with tf.name_scope('evaluation_indexs'):
-            CSI45 = evaluation_functions.csi_score(prediction, label, downvalue=45 / 80, upvalue=1)
-            CSI = evaluation_functions.csi_score(prediction, label, downvalue=35 / 80, upvalue=1)
+        # Compute CSI
+        csi = evaluation_functions.csi_score_tf(predictions, labels,
+                                                downvalue=35/80, upvalue=1)
+        csi45 = evaluation_functions.csi_score_tf(predictions, labels,
+                                                  downvalue=45/80, upvalue=1)
 
-        train_saver = tf.train.Saver(max_to_keep=model_keep_num)
-        validation_sum_steps = math.floor(train_data_num / batch_size)
+        return loss, csi, csi45, predictions, labels
 
-        with tf.Session() as sess:
-            logger.info("------------------- Time: " + datetime.now().strftime('%Y-%m-%d  %H:%M:%S') + " begin running -------------------")
-            sess.run(tf.global_variables_initializer())
-            logger.info("------------------- Time: " + datetime.now().strftime('%Y-%m-%d  %H:%M:%S') + " loading pretrain models -------------------")
-            pre_tra_steps = 0
-            model = tf.train.get_checkpoint_state(model_saving_path)
-            if model and model.model_checkpoint_path:
-                train_saver.restore(sess, model.model_checkpoint_path)
-                pre_tra_steps = int(model.model_checkpoint_path.split('ckpt-')[1])
-                logger.info(
-                    "Found pretrain models, reading..... " + model.model_checkpoint_path + "   pretrain steps: " + str(
-                        pre_tra_steps))
-            else:
-                logger.info("Not found pretrain models, restart training..... ")
-            logger.info("------------------- Time: " + datetime.now().strftime('%Y-%m-%d  %H:%M:%S') + " training parameters -------------------")
-            logger.info("train_data_num: " + str(train_data_num))
-            logger.info("valid_data_num: " + str(valid_data_num))
-            logger.info("test_data_num: " + str(test_data_num))
-            logger.info("img_height: " + str(img_height))
-            logger.info("img_width: " + str(img_width))
-            logger.info("input_length: " + str(input_length))
-            logger.info("output_length: " + str(output_length))
-            logger.info("training_steps: " + str(training_steps))
-            logger.info("imgs_sum_steps: " + str(imgs_sum_steps))
-            logger.info("validation_sum_steps: " + str(validation_sum_steps))
-            logger.info("batch_size: " + str(batch_size))
-            logger.info("val_batch_size: " + str(val_batch_size))
-            logger.info("test_batch_size: " + str(test_batch_size))
-            logger.info("optimizer: " + str(tf.train.AdamOptimizer))
-            logger.info("generator_ini_learning_rate: " + str(generator_ini_learning_rate))
-            logger.info("------------------- Time: " + datetime.now().strftime('%Y-%m-%d  %H:%M:%S') + " model parameters num -------------------")
-            logger.info("------------------- Time: " + datetime.now().strftime('%Y-%m-%d  %H:%M:%S') + " start training -------------------")
+    def train(self, train_dataset, val_dataset, training_steps, validation_steps):
+        """Training loop"""
+        best_wcsi = -1
+        count = 0
 
-            count = 0
-            best = -1
-            model_step = pre_tra_steps
-            if update_generator :
+        train_iter = iter(train_dataset)
 
-                for step in range(training_steps):
+        for step in range(training_steps):
+            # Training step
+            inputs, _ = next(train_iter)
+            loss = self.train_step(inputs)
 
-                    if update_generator and ((step + 1) % 1 == 0):
-                        sess.run(train_op)
-                    if (step + 1 + pre_tra_steps) % imgs_sum_steps == 0:
-                        gen_train_loss = sess.run(loss)
-                        logger.info(datetime.now().strftime('%Y-%m-%d  %H:%M:%S') + " training steps: %d, training loss: %g" % (step + 1 + pre_tra_steps, gen_train_loss))
+            # Log training loss
+            if (step + 1 + self.pre_tra_steps) % imgs_sum_steps == 0:
+                self.logger.info(
+                    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+                    f"training steps: {step + 1 + self.pre_tra_steps}, "
+                    f"training loss: {loss.numpy():.6f}"
+                )
 
-                    if (step + 1 + pre_tra_steps) % validation_sum_steps == 0:
+            # Validation
+            if (step + 1 + self.pre_tra_steps) % validation_steps == 0:
+                val_loss, wcsi = self.validate(val_dataset)
 
-                        val_loss = 0
-                        csi = []
+                self.logger.info(
+                    f"------------------- Training steps: {step + 1 + self.pre_tra_steps}, "
+                    f"validation loss: {val_loss:.6f}, wCSI: {wcsi:.6f} -------------------"
+                )
 
-                        batch_val_step = math.ceil(valid_data_num / val_batch_size) - 1
+                # Check for improvement
+                if wcsi <= best_wcsi:
+                    count += 1
+                    self.logger.info(f'eval wcsi is not improved for {count} epoch\n')
+                else:
+                    count = 0
+                    self.logger.info(
+                        f'eval wcsi is improved from {best_wcsi:.5f} to {wcsi:.5f}, '
+                        f'saving model\n'
+                    )
+                    self.checkpoint_manager.save(checkpoint_number=step + 1 + self.pre_tra_steps)
+                    best_wcsi = wcsi
 
-                        for i in range(batch_val_step):
-                            val_loss_, csi_ = sess.run([valloss, CSI])
-                            val_loss += val_loss_ * val_batch_size
-                            csi.append(csi_)
+                # Early stopping
+                if count >= patience:
+                    self.logger.info(f'early stopping reached, best score is {best_wcsi:.5f}\n')
+                    break
 
-                        val_loss_, csi_ = sess.run([valloss, CSI])
-                        val_loss += val_loss_ * (valid_data_num-batch_val_step*val_batch_size)
-                        csi.append(csi_)
+        return step + 1 + self.pre_tra_steps
 
-                        csi = np.concatenate(csi, axis=0)
-                        csi = np.nanmean(csi,axis=0)
+    def validate(self, val_dataset):
+        """Run validation"""
+        val_loss_total = 0
+        csi_list = []
+        num_samples = 0
 
-                        val_loss = val_loss / valid_data_num
+        # Count validation samples
+        try:
+            # Try to get number of samples from directory
+            val_files = tf.io.gfile.glob(validation_dataset_path + '*.tfrecords')
+            num_val_files = len(val_files)
+            batch_val_steps = max(1, num_val_files // val_batch_size)
+        except:
+            batch_val_steps = 100  # Default fallback
 
-                        wcsi = np.sum(temporal_weights * csi) / np.sum(temporal_weights)
-                        csi = list(csi)
-                        logger.info(csi)
-                        csi = np.nanmean(csi)
-                        logger.info("------------------- Training steps: %d, validation loss: %g, CSI: %g, wCSI: %g" % (step + 1 + pre_tra_steps, val_loss, csi, wcsi) + " -------------------")
+        val_iter = iter(val_dataset)
 
-                        if wcsi <= best:
-                            count += 1
-                            logger.info('eval wcsi is not improved for {} epoch'.format(count) + '\n')
+        for i in range(batch_val_steps):
+            try:
+                inputs, _ = next(val_iter)
+                loss, csi, _, _, _ = self.val_step(inputs)
 
-                        else:
-                            count = 0
-                            logger.info('eval valpred_loss is improved from {:.5f} to {:.5f}, saving model'.format(best, wcsi) + '\n')
-                            train_saver.save(sess, os.path.join(model_saving_path, model_name), step + 1 + pre_tra_steps)
-                            best = wcsi
+                current_batch_size = tf.shape(inputs)[0].numpy()
+                val_loss_total += loss.numpy() * current_batch_size
+                csi_list.append(csi.numpy())
+                num_samples += current_batch_size
+            except tf.errors.OutOfRangeError:
+                break
 
-                        if count == patience:
-                            print('early stopping reached, best score is {:5f}'.format(best))
-                            logger.info('early stopping reached, best score is {:5f}'.format(best) + '\n')
-                            model_step = step + 1 + pre_tra_steps
-                            break
+        if num_samples == 0:
+            return float('inf'), -1
 
-            if not update_generator:
+        # Compute average metrics
+        val_loss = val_loss_total / num_samples
+        csi_array = np.concatenate(csi_list, axis=0)
+        csi_mean = np.nanmean(csi_array, axis=0)
+        wcsi = np.sum(temporal_weights * csi_mean) / np.sum(temporal_weights)
 
-                test_loss = 0
-                csi45 = []
-                csi = []
+        self.logger.info(f"CSI per timestep: {list(csi_mean)}")
+        self.logger.info(f"Mean CSI: {np.nanmean(csi_mean):.6f}")
 
-                batch_test_step = math.ceil(test_data_num / test_batch_size) - 1
+        return val_loss, wcsi
 
-                for i in range(batch_test_step):
-                    test_loss_, csi45_, csi_, prediction_imgs_, label_imgs_ = sess.run([valloss, CSI45, CSI, prediction, label])
+    def test(self, test_dataset):
+        """Run testing"""
+        test_loss_total = 0
+        csi_list = []
+        csi45_list = []
+        num_samples = 0
 
-                    test_loss += test_loss_ * test_batch_size
-                    csi45.append(csi45_)
-                    csi.append(csi_)
+        # Count test samples
+        try:
+            test_files = tf.io.gfile.glob(test_dataset_path + '*.tfrecords')
+            num_test_files = len(test_files)
+            batch_test_steps = max(1, num_test_files // test_batch_size)
+        except:
+            batch_test_steps = 100  # Default fallback
 
-                test_loss_, csi45_, csi_, prediction_imgs_, label_imgs_ = sess.run([valloss, CSI45, CSI, prediction, label])
-                test_loss += test_loss_ * (test_data_num - batch_test_step * test_batch_size)
-                csi45.append(csi45_)
-                csi.append(csi_)
+        test_iter = iter(test_dataset)
 
-                csi45 = np.concatenate(csi45, axis=0)
-                csi = np.concatenate(csi, axis=0)
+        for i in range(batch_test_steps):
+            try:
+                inputs, _ = next(test_iter)
+                loss, csi, csi45, predictions, labels = self.val_step(inputs)
 
-                csi45 = np.nanmean(csi45, axis=0)
-                csi = np.nanmean(csi, axis=0)
+                current_batch_size = tf.shape(inputs)[0].numpy()
+                test_loss_total += loss.numpy() * current_batch_size
+                csi_list.append(csi.numpy())
+                csi45_list.append(csi45.numpy())
+                num_samples += current_batch_size
+            except tf.errors.OutOfRangeError:
+                break
 
-                test_loss = test_loss / test_data_num
+        if num_samples == 0:
+            self.logger.info("No test samples found!")
+            return
 
-                wcsi45 = np.sum(temporal_weights * csi45) / np.sum(temporal_weights)
-                wcsi = np.sum(temporal_weights * csi) / np.sum(temporal_weights)
+        # Compute average metrics
+        test_loss = test_loss_total / num_samples
+        csi_array = np.concatenate(csi_list, axis=0)
+        csi45_array = np.concatenate(csi45_list, axis=0)
 
-                csi45 = list(csi45)
-                csi = list(csi)
+        csi_mean = np.nanmean(csi_array, axis=0)
+        csi45_mean = np.nanmean(csi45_array, axis=0)
 
-                logger.info(csi45)
-                logger.info('--------------------------------------------------------------------------')
-                logger.info(csi)
+        wcsi = np.sum(temporal_weights * csi_mean) / np.sum(temporal_weights)
+        wcsi45 = np.sum(temporal_weights * csi45_mean) / np.sum(temporal_weights)
 
-                csi45 = np.nanmean(csi45)
-                csi = np.nanmean(csi)
+        self.logger.info(f"CSI45 per timestep: {list(csi45_mean)}")
+        self.logger.info('--------------------------------------------------------------------------')
+        self.logger.info(f"CSI per timestep: {list(csi_mean)}")
 
-                logger.info(
-                    "------------------- Training steps: %d, test loss: %g, CSI45: %g, CSI: %g, wCSI45: %g, wCSI: %g" % (
-                    model_step, test_loss, csi45, csi, wcsi45, wcsi) + " -------------------")
+        self.logger.info(
+            f"------------------- Test loss: {test_loss:.6f}, "
+            f"CSI45: {np.nanmean(csi45_mean):.6f}, CSI: {np.nanmean(csi_mean):.6f}, "
+            f"wCSI45: {wcsi45:.6f}, wCSI: {wcsi:.6f} -------------------"
+        )
 
-                logger.info("------------------- Time: " + datetime.now().strftime('%Y-%m-%d  %H:%M:%S') + " end testing -------------------" + '\n')
 
+def main():
+    """Main function"""
+    seed_tensorflow(seed=1997)
+
+    # Setup
+    update_generator = True
+
+    if update_generator and os.path.exists(model_saving_path):
+        # Only delete if explicitly requested
+        # delete_file(model_saving_path)
+        pass
+
+    if os.path.isfile(running_log_path) and update_generator:
+        # Only delete if explicitly requested
+        # os.remove(running_log_path)
+        pass
+
+    logger = log.setting_log(running_log_path)
+
+    logger.info(
+        f"------------------- Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+        f"begin running -------------------"
+    )
+
+    # Count data samples
+    try:
+        train_files = tf.io.gfile.glob(training_dataset_path + '*.tfrecords')
+        val_files = tf.io.gfile.glob(validation_dataset_path + '*.tfrecords')
+        test_files = tf.io.gfile.glob(test_dataset_path + '*.tfrecords')
+        train_data_num = len(train_files)
+        valid_data_num = len(val_files)
+        test_data_num = len(test_files)
+    except:
+        train_data_num = 1000
+        valid_data_num = 200
+        test_data_num = 200
+
+    # Create datasets
+    train_dataset = get_dataset_from_tfrecords(
+        training_dataset_path + '*.tfrecords',
+        is_train_dataset=True,
+        batch_size=batch_size,
+        shuffle_buffer_size=500
+    )
+
+    val_dataset = get_dataset_from_tfrecords(
+        validation_dataset_path + '*.tfrecords',
+        is_train_dataset=False,
+        batch_size=val_batch_size,
+        shuffle_buffer_size=500
+    )
+
+    test_dataset = get_dataset_from_tfrecords(
+        test_dataset_path + '*.tfrecords',
+        is_train_dataset=False,
+        batch_size=test_batch_size,
+        shuffle_buffer_size=500
+    )
+
+    # Log parameters
+    logger.info(
+        f"------------------- Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+        f"training parameters -------------------"
+    )
+    logger.info(f"train_data_num: {train_data_num}")
+    logger.info(f"valid_data_num: {valid_data_num}")
+    logger.info(f"test_data_num: {test_data_num}")
+    logger.info(f"img_height: {img_height}")
+    logger.info(f"img_width: {img_width}")
+    logger.info(f"img_depth: {img_depth}")
+    logger.info(f"input_length: {input_length}")
+    logger.info(f"output_length: {output_length}")
+    logger.info(f"training_steps: {training_steps}")
+    logger.info(f"imgs_sum_steps: {imgs_sum_steps}")
+    logger.info(f"validation_sum_steps: {validation_sum_steps}")
+    logger.info(f"batch_size: {batch_size}")
+    logger.info(f"val_batch_size: {val_batch_size}")
+    logger.info(f"test_batch_size: {test_batch_size}")
+    logger.info(f"optimizer: Adam")
+    logger.info(f"generator_ini_learning_rate: {generator_ini_learning_rate}")
+
+    # Create trainer
+    trainer = ConvLSTM3DTrainer(conf, logger)
+
+    logger.info(
+        f"------------------- Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+        f"start training -------------------"
+    )
+
+    if update_generator:
+        # Training mode
+        model_step = trainer.train(
+            train_dataset,
+            val_dataset,
+            training_steps,
+            validation_sum_steps
+        )
+        logger.info(f"Training completed at step {model_step}")
+    else:
+        # Testing mode
+        logger.info(
+            f"------------------- Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+            f"start testing -------------------"
+        )
+        trainer.test(test_dataset)
+        logger.info(
+            f"------------------- Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} "
+            f"end testing -------------------\n"
+        )
 
 
 if __name__ == '__main__':
-    tf.app.run()
+    main()

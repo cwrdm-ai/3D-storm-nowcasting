@@ -1,0 +1,32 @@
+# Requirements for 3D Storm Nowcasting - TensorFlow 2.x
+
+# Deep Learning Framework
+tensorflow>=2.4.0  # TensorFlow 2.x (supports both CPU and GPU)
+# For GPU support, ensure CUDA 11.x and cuDNN 8.x are installed
+
+# Core scientific computing
+numpy>=1.19.0,<2.0.0
+scipy>=1.5.0
+
+# Data handling
+pandas>=1.1.0
+
+# Visualization
+matplotlib>=3.3.0
+
+# Progress bars
+tqdm>=4.50.0
+
+# Configuration
+configparser  # For reading .ini config files
+
+# Logging (usually built-in, but explicit for clarity)
+# logging - built-in Python module
+
+# For Kochi radar preprocessing (optional, install from preprocessing/requirements.txt)
+# arm-pyart>=1.12.0
+# netCDF4>=1.5.0
+# xarray>=0.16.0
+
+# Note: For preprocessing Kochi radar data, install additional dependencies:
+#   pip install -r preprocessing/requirements.txt
